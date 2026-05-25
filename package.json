@@ -1,0 +1,14 @@
+
+{
+  "name": "playwright-demo",
+  "version": "1.0.0",
+  "description": "BOCHK auto registration script using Playwright",
+  "main": "bochk_auto.js",
+  "scripts": {
+    "install-chromium": "npx playwright install chromium",
+    "start": "node bochk_auto.js"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}
