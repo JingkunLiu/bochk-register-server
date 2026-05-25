@@ -9,19 +9,25 @@ const userInfo = {
     accountType: "一般賬戶",     // 账户种类，例如 "N" (跨境理財通:北向通匯款專戶)
     
     // ---- page 2 选项 ----
-    title: "1",           // 称呼 (单选框选项值: 1=先生, 2=小姐, 3=太太, 4=女士)
-    surname: "张",      // 姓氏
-    firstName: "三明", // 名字
-    countryNo: "86",      // 区号
-    telNo: "13800138000", // 手机号码
+    title: "1",            // 称呼 (单选框选项值: 1=先生, 2=小姐, 3=太太, 4=女士)
+    surname: "张",         // 姓氏
+    firstName: "三明",     // 名字
+    countryNo: "86",       // 区号
+    telNo: "13800138000",  // 手机号码
     email: "example@example.com", // 邮箱
     
     precondition: "B",    // 办理条件依据 (单选框选项值: "B", "D" 等)
     
-    district: "_central_western_district", // 区域
-    branchCode: "中區分行",  // 分行代码
-    appDate: "02/06/2026",  // 预约日期 (格式需与日历控件一致，如:02/06/2026)
-    appTime: "09:00"        // 预约时间
+    // ---- 动态优选策略 ----
+    preferredDistrictValue: "_kowloon_city_district",   // 优先区域: 九龍城區
+    preferredBranchText: "黃埔花園",                    // 优先分行包含的关键字
+    
+    // 如果上面的动态查找全部满额失效，则强行填入以下兜底的静态值
+    district: "_central_western_district", // 区域兜底
+    branchCode: "中區分行",                // 分行代码兜底
+    
+    appDate: "03/06/2026",// 预约日期 (格式需与日历控件一致，如 01/06/2026)
+    appTime: "16:15"      // 预约时间
 };
 
 (async () => {
@@ -37,7 +43,7 @@ const userInfo = {
         // ==========================================
         const startUrl = 'https://transaction.bochk.com/whk/form/openAccount/input.action?lang=zh_HK'; // 请替换为第一步的实际线上真实URL
         console.log(`🌐 正在访问页面: ${startUrl}`);
-        await page.goto(startUrl, { waitUntil: 'load' });
+        await page.goto(startUrl, { waitUntil: 'load', timeout: 60000 * 15 }); // 等待页面完全加载，最长等待15分钟
 
         // 等待选择框出现并选择证件类型和账户类型
         const idTypeSelector = 'select[name="bean.idType"]';
@@ -95,8 +101,75 @@ const userInfo = {
         // 使用 try-catch 忽略可能的未找到（具体看页面是否需要这个字段，不一定所有流程都有）
         try { await page.check(`input[name="bean.precondition"][value="${userInfo.precondition}"]`); } catch(e){}
 
-        // appDate 是只读 (readonly) 的日历输入框。通过底层 evaluate 强制赋值
-        // 加入对 jQuery UI Datepicker 原生 API 的支持，确保彻底触发生态内的校验与级联更新
+        
+        // 获取所有可用的(未满的)区域列表
+        console.log("⏳ 正在尝试寻找并选择区域和分行...");
+        let selectSuccess = false;
+
+        await page.waitForTimeout(1000); 
+        const availableDistricts = await page.evaluate(() => {
+            const options = Array.from(document.querySelectorAll('select[name="bean.district"] option'));
+            console.log("🔍 页面上所有区域选项:", options.map(o => ({ value: o.value, text: o.text, disabled: o.disabled })));
+            return options
+                .filter(o => o.value && !o.disabled && !o.text.includes('已滿'))
+                .map(o => ({ value: o.value, text: o.text }));
+        });
+
+        console.log(`🔍 找到 ${availableDistricts.length} 个有可用额度的区域。`);
+
+        if (availableDistricts.length > 0) {
+            // 对可用区域进行排序，优先把我们想要的区域放到最前面
+            availableDistricts.sort((a, b) => {
+                if (a.value === userInfo.preferredDistrictValue) return -1;
+                if (b.value === userInfo.preferredDistrictValue) return 1;
+                return 0;
+            });
+
+            for (const dist of availableDistricts) {
+                console.log(`\n👉 尝试选择区域: [${dist.text}] (${dist.value})`);
+                await page.selectOption('select[name="bean.district"]', dist.value);
+                
+                // 等待页面ajax拉取该区域的分行列表
+                await page.waitForTimeout(1500); 
+
+                // 获取该区域下所有可用的(未满的)分行
+                const availableBranches = await page.evaluate(() => {
+                    const options = Array.from(document.querySelectorAll('select[name="bean.branchCode"] option'));
+                    return options
+                        .filter(o => o.value && !o.disabled && !o.text.includes('已滿'))
+                        .map(o => ({ value: o.value, text: o.text }));
+                });
+
+                if (availableBranches.length > 0) {
+                    // 对可用分行排序，优先把包含指定关键字的分行排在最前面
+                    availableBranches.sort((a, b) => {
+                        if (a.text.includes(userInfo.preferredBranchText)) return -1;
+                        if (b.text.includes(userInfo.preferredBranchText)) return 1;
+                        return 0;
+                    });
+
+                    const targetBranch = availableBranches[0];
+                    console.log(`✅ 在该区域下找到可用分行并完成选择: [${targetBranch.text}] (${targetBranch.value})\n`);
+                    await page.selectOption('select[name="bean.branchCode"]', targetBranch.value);
+                    
+                    selectSuccess = true;
+                    break; // 区域和分行都选好了，跳出循环
+                } else {
+                    console.warn(`⚠️ 区域 ${dist.text} 下没有任何可用分行，退回重新寻找下一个区域...`);
+                }
+            }
+        }
+
+        if (!selectSuccess) {
+            console.error("❌ 警告：未找到任何有额度的区域或分行; 无法继续执行预约。Will terminate after 10m...");
+            await page.waitForTimeout(60000 * 10); 
+            throw new Error("没有可用的区域或分行可供选择，请检查页面是否改版或配置的优选条件是否过于苛刻。");
+        }
+
+        await page.waitForTimeout(500); // 等待页面可能的动态更新稳定下来
+
+        // appDate 是只读 (readonly) 的日历输入框。通过底层 evaluate 强制赋值。
+        // 加入对 jQuery UI Datepicker 原生 API 的支持，确保彻底触发生态内的校验与级联更新。
         await page.evaluate((dateVal) => {
             console.log("⏳ 正在设置预约日期...");
             const dateEl = document.getElementById('eAAOForm_appDate_field');
@@ -112,57 +185,36 @@ const userInfo = {
                 
                 // 触发在其行内绑定的 onchange 方法
                 if (typeof window.changeAppDate === 'function') {
+                    console.log("触发 changeAppDate 方法更新内部状态...");
                     window.changeAppDate(dateVal);
                 }
 
                 // 派发通用的 change 事件兜底
-                dateEl.dispatchEvent(new Event('change', { bubbles: true }));
+                //dateEl.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }, userInfo.appDate);
-        
 
-        /*
-        // 处理分行区域 (动态寻找第一个未满且没被禁用的区域并选择)
-        console.log("⏳ 正在寻找未满的分行区域...");
-        const availableDistrict = await page.evaluate(() => {
-            const options = Array.from(document.querySelectorAll('select[name="bean.district"] option'));
-            // 排除值为空(请选择)以及被禁用/带有已满字样的选项
-            const validOpt = options.find(o => o.value && !o.disabled && !o.text.includes('已滿') && !o.text.includes('已满'));
-            return validOpt ? validOpt.value : null;
-        });
-
-        if (availableDistrict) {
-            console.log(`✅ 找到可用区域并选择: [${availableDistrict}]`);
-            await page.selectOption('select[name="bean.district"]', availableDistrict);
-        } else {
-            console.error("❌ 警告：所有区域均已满！强行使用配置默认值测试...");
-            try { await page.selectOption('select[name="bean.district"]', userInfo.district); } catch (e) {}
+        await page.waitForTimeout(500); // 等待页面可能的动态更新稳定下来
+        try {
+            // 获取time select里所有可用的(未满的)选项，确认我们想选的时间是否真的有位
+            const availableAppTimes = await page.evaluate(() => {
+                const options = Array.from(document.querySelectorAll('select[name="bean.appTime"] option'));
+                return options
+                    .filter(o => o.value && !o.disabled && !o.text.includes('已滿'))
+                    .map(o => ({ value: o.value, text: o.text }));
+            });
+            availableAppTimes.sort();
+            const targetAppTime = availableAppTimes[0];
+            if (availableAppTimes.indexOf(userInfo.appTime) >= 0) {
+                targetAppTime = userInfo.appTime;
+            }
+            await page.selectOption('select[name="bean.appTime"]', targetAppTime);
+        } catch (e) {
+            console.error("❌ 选择预约时间失败，请确认配置的 appTime 是否正确:", e);
         }
         
-        // 区域改变可能会触发 ajax 请求分行列表，延时等待一下即可
-        console.log("⏳ 等待分行数据加载(AJAX)...");
-        await page.waitForTimeout(1500); 
 
-        // 同样动态处理[具体分行]选项
-        console.log("⏳ 正在寻找未满的具体分行...");
-        const availableBranch = await page.evaluate(() => {
-            const options = Array.from(document.querySelectorAll('select[name="bean.branchCode"] option'));
-            const validOpt = options.find(o => o.value && !o.disabled && !o.text.includes('已滿') && !o.text.includes('已满'));
-            return validOpt ? validOpt.value : null;
-        });
-
-        if (availableBranch) {
-            console.log(`✅ 找到可用分行并选择: [${availableBranch}]`);
-            await page.selectOption('select[name="bean.branchCode"]', availableBranch);
-        } else {
-            console.error("❌ 警告：当前区域下的所有分行可能已满！");
-            try { await page.selectOption('select[name="bean.branchCode"]', userInfo.branchCode); } catch (e) {}
-        }
-
-        await page.selectOption('select[name="bean.appTime"]', userInfo.appTime);
-        */
-
-
+        console.log("⏳页面内容", await page.content().then(html =>html));
 
         // ==========================================
         // 第三步：抓取验证码并请求本地 OCR 服务
@@ -195,11 +247,12 @@ const userInfo = {
             // console.log("🚀 所有资料填写完毕，提交表单...");
             // await page.click('#eAAOForm_submit_button'); 
             
-            console.log("🎉 流程执行完毕，保留浏览器供排查检查 5 分钟...");
-            await page.waitForTimeout(60000 * 5); // 停留5分钟供肉眼确认，结束后自动关闭
+            console.log("🎉 流程执行完毕，保留浏览器供排查检查 60 分钟...");
+            await page.waitForTimeout(60000 * 60); // 停留5分钟供肉眼确认，结束后自动关闭
         } else {
             console.error("❌ 验证码识别失败，返回数据:", resData);
         }
+
     } catch (error) {
         console.error("💥 脚本执行过程中发生错误:", error);
     } finally {
