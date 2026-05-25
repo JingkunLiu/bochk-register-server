@@ -10,18 +10,18 @@ const userInfo = {
     
     // ---- page 2 选项 ----
     title: "1",           // 称呼 (单选框选项值: 1=先生, 2=小姐, 3=太太, 4=女士)
-    surname: "CHAN",      // 姓氏
-    firstName: "TAI MAN", // 名字
-    countryNo: "86 中國內地",      // 区号
+    surname: "张",      // 姓氏
+    firstName: "三明", // 名字
+    countryNo: "86",      // 区号
     telNo: "13800138000", // 手机号码
     email: "example@example.com", // 邮箱
     
     precondition: "B",    // 办理条件依据 (单选框选项值: "B", "D" 等)
     
-    district: "中西區",       // 区域
-    branchCode: "中區分行", // 分行代码
-    appDate: "2026-06-01",// 预约日期 (格式需与日历控件一致，如 2026-06-01)
-    appTime: "09:00"      // 预约时间
+    district: "_central_western_district", // 区域
+    branchCode: "中區分行",  // 分行代码
+    appDate: "02/06/2026",  // 预约日期 (格式需与日历控件一致，如:02/06/2026)
+    appTime: "09:00"        // 预约时间
 };
 
 (async () => {
@@ -77,18 +77,16 @@ const userInfo = {
         await page.fill('input[name="bean.surname"]', userInfo.surname);
         await page.fill('input[name="bean.firstName"]', userInfo.firstName);
         
-        // countryNo 可能是定制的隐藏或浮层输入框，强制使用 evaluate 赋值并触发事件
-        await page.evaluate((countryCode) => {
-            const countryEl = document.querySelector('input[name="bean.countryNo"]');
-            if (countryEl) {
-                countryEl.value = countryCode;
-                countryEl.dispatchEvent(new Event('change', { bubbles: true }));
-                
-                // 将可能用于显示的定制 label 同步更新（根据页面原有逻辑常见特征）
-                const locationLabel = document.querySelector('.searchContainer .locationLabel');
-                if(locationLabel) locationLabel.innerText = '+' + countryCode;
-            }
-        }, userInfo.countryNo);
+        // countryNo 实际上是通过选择内部的 bean.backUp 单选框来触发它原生绑定的 JS ({#wwctrl_openMCaccount_countryNo_radio input}.on('change'))
+        // 这样不仅能赋值到 test01 (真实提交使用的隐藏输入框)，还能更新上面的显示文案，彻底通过前端校验
+        await page.locator('.searchContainer').click();           // 打开下拉层
+        await page.waitForTimeout(500);                           // 等待动画
+        
+        // 由于原生的 radio input 往往是被隐藏的 (display: none)，直接 check 会报不可见/无法交互错误。
+        // 我们通过直接点击它对应的 label 来触发选中效果。加上 force: true 防止元素被上层装饰特效遮挡。
+        await page.click(`label[for="openMCaccount_countryNo_radio${userInfo.countryNo}"]`, { force: true });
+        
+        await page.waitForTimeout(500);                           // 等待它内部的setTimeout收起层
 
         await page.fill('input[name="bean.telNo"]', userInfo.telNo);
         await page.fill('input[name="bean.email"]', userInfo.email);
@@ -97,20 +95,33 @@ const userInfo = {
         // 使用 try-catch 忽略可能的未找到（具体看页面是否需要这个字段，不一定所有流程都有）
         try { await page.check(`input[name="bean.precondition"][value="${userInfo.precondition}"]`); } catch(e){}
 
-        // appDate 是只读 (readonly) 的日历输入框，正常的 fill() 可能会报错，所以使用 evaluate 直接赋值
+        // appDate 是只读 (readonly) 的日历输入框。通过底层 evaluate 强制赋值
+        // 加入对 jQuery UI Datepicker 原生 API 的支持，确保彻底触发生态内的校验与级联更新
         await page.evaluate((dateVal) => {
+            console.log("⏳ 正在设置预约日期...");
             const dateEl = document.getElementById('eAAOForm_appDate_field');
             if(dateEl) {
-                dateEl.value = dateVal;
-                // 触发其绑定的 onchange 事件（源文件中有 changeAppDate）
+                // 如果页面上有 jQuery UI Datepicker，优先调用其原生 API 赋值，最为安全
+                if (window.$ && window.$(dateEl).data('datepicker')) {
+                    console.log("使用 jQuery UI Datepicker API 设置日期...");
+                    window.$(dateEl).datepicker('setDate', dateVal);
+                } else {
+                    console.log("直接设置日期输入框的值...");
+                    dateEl.value = dateVal;
+                }
+                
+                // 触发在其行内绑定的 onchange 方法
                 if (typeof window.changeAppDate === 'function') {
                     window.changeAppDate(dateVal);
-                } else {
-                    dateEl.dispatchEvent(new Event('change', { bubbles: true }));
                 }
+
+                // 派发通用的 change 事件兜底
+                dateEl.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }, userInfo.appDate);
+        
 
+        /*
         // 处理分行区域 (动态寻找第一个未满且没被禁用的区域并选择)
         console.log("⏳ 正在寻找未满的分行区域...");
         const availableDistrict = await page.evaluate(() => {
@@ -149,6 +160,9 @@ const userInfo = {
         }
 
         await page.selectOption('select[name="bean.appTime"]', userInfo.appTime);
+        */
+
+
 
         // ==========================================
         // 第三步：抓取验证码并请求本地 OCR 服务
@@ -162,7 +176,7 @@ const userInfo = {
         const base64Image = captchaBuffer.toString('base64');
 
         // 发起请求到本地基于 Docker 跑起来的 FastApi
-        const response = await fetch("http://127.0.0.1:8080/api/recognize", {
+        const response = await fetch("http://172.16.15.227:38080/api/recognize", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ image_base64: base64Image })
@@ -181,12 +195,11 @@ const userInfo = {
             // console.log("🚀 所有资料填写完毕，提交表单...");
             // await page.click('#eAAOForm_submit_button'); 
             
-            console.log("🎉 流程执行完毕，保留浏览器供排查检查 30 秒...");
-            await page.waitForTimeout(30000); // 停留30秒供肉眼确认，结束后自动关闭
+            console.log("🎉 流程执行完毕，保留浏览器供排查检查 5 分钟...");
+            await page.waitForTimeout(60000 * 5); // 停留5分钟供肉眼确认，结束后自动关闭
         } else {
             console.error("❌ 验证码识别失败，返回数据:", resData);
         }
-
     } catch (error) {
         console.error("💥 脚本执行过程中发生错误:", error);
     } finally {
