@@ -203,18 +203,23 @@ const userInfo = {
                     .filter(o => o.value && !o.disabled && !o.text.includes('已滿'))
                     .map(o => ({ value: o.value, text: o.text }));
             });
-            availableAppTimes.sort();
-            const targetAppTime = availableAppTimes[0];
-            if (availableAppTimes.indexOf(userInfo.appTime) >= 0) {
-                targetAppTime = userInfo.appTime;
-            }
-            await page.selectOption('select[name="bean.appTime"]', targetAppTime);
+
+            availableAppTimes.sort((a, b) => {
+                if (a.value === userInfo.appTime) return -1;
+                if (b.value === userInfo.appTime) return 1;
+                return 0;
+            });
+            console.log(`🔍 可用的预约时间选项: ${JSON.stringify(availableAppTimes)}`);
+
+            const targetAppTime = availableAppTimes[0];            
+            console.log(`⏳ 正在选择预约时间: [${targetAppTime.text}]...`);
+            await page.selectOption('select[name="bean.appTime"]', targetAppTime.value);
         } catch (e) {
             console.error("❌ 选择预约时间失败，请确认配置的 appTime 是否正确:", e);
         }
         
 
-        console.log("⏳页面内容", await page.content().then(html =>html));
+        //console.log("⏳页面内容", await page.content().then(html =>html));
 
         // ==========================================
         // 第三步：抓取验证码并请求本地 OCR 服务
