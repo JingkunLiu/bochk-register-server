@@ -237,7 +237,8 @@ const userInfo = {
 
         // 发起请求到本地基于 Docker 跑起来的 FastApi
         let ocrApiUrl = "http://172.16.15.227:38080/api/recognize";
-        //ocrApiUrl = "http://172.16.15.227:38080/api/moonshot";
+        ocrApiUrl = "http://172.16.15.227:38080/api/moonshot";
+        //ocrApiUrl = "http://172.16.15.227:38081/api/paddle";
         const response = await fetch(ocrApiUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
