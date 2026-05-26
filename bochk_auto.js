@@ -258,6 +258,7 @@ const userInfo = {
                 recognizedCaptcha = resData.result;
             }
 
+            recognizedCaptcha = recognizedCaptcha.replace(/\s+/g, ''); // 去除空格
             if (recognizedCaptcha && recognizedCaptcha.length === 4) {
                 console.log(`🎯 验证码识别成功: [${recognizedCaptcha}]`);
                 // 填入验证码
