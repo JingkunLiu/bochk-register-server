@@ -49,7 +49,7 @@ const userInfo = {
         const idTypeSelector = 'select[name="bean.idType"]';
         const accountTypeSelector = 'select[name="bean.serviceAccountType"]';
         
-        await page.waitForSelector(idTypeSelector, { timeout: 10000 });
+        await page.waitForSelector(idTypeSelector, { timeout: 60000 });
         
         console.log(`✅ 正在选择证件种类 [${userInfo.idType}] 及账户种类 [${userInfo.accountType}]...`);
         await page.selectOption(idTypeSelector, userInfo.idType);
@@ -60,7 +60,7 @@ const userInfo = {
 
         // 勾选用户协议复选框
         const acceptTermsSelector = '#mortgageLoans_form_acceptTerms_field';
-        await page.waitForSelector(acceptTermsSelector, { timeout: 5000 });
+        await page.waitForSelector(acceptTermsSelector, { timeout: 30000 });
         console.log("✅ 正在勾选协议并进入下一步...");
         await page.check(acceptTermsSelector);
         
@@ -87,26 +87,26 @@ const userInfo = {
         // 这样不仅能赋值到 test01 (真实提交使用的隐藏输入框)，还能更新上面的显示文案，彻底通过前端校验
         await page.locator('.searchContainer').click();           // 打开下拉层
         await page.waitForTimeout(500);                           // 等待动画
-        
         // 由于原生的 radio input 往往是被隐藏的 (display: none)，直接 check 会报不可见/无法交互错误。
         // 我们通过直接点击它对应的 label 来触发选中效果。加上 force: true 防止元素被上层装饰特效遮挡。
         await page.click(`label[for="openMCaccount_countryNo_radio${userInfo.countryNo}"]`, { force: true });
         
-        await page.waitForTimeout(500);                           // 等待它内部的setTimeout收起层
-
+        // 填写联系方式
+        await page.waitForTimeout(500); // 等待它内部的setTimeout收起层
         await page.fill('input[name="bean.telNo"]', userInfo.telNo);
         await page.fill('input[name="bean.email"]', userInfo.email);
 
         // precondition 也是一个单选框 (radio)
         // 使用 try-catch 忽略可能的未找到（具体看页面是否需要这个字段，不一定所有流程都有）
-        try { await page.check(`input[name="bean.precondition"][value="${userInfo.precondition}"]`); } catch(e){}
+        // 先注释 使用默认值
+        //try { await page.check(`input[name="bean.precondition"][value="${userInfo.precondition}"]`); } catch(e){}
 
         
         // 获取所有可用的(未满的)区域列表
         console.log("⏳ 正在尝试寻找并选择区域和分行...");
         let selectSuccess = false;
 
-        await page.waitForTimeout(1000); 
+        await page.waitForTimeout(500); 
         const availableDistricts = await page.evaluate(() => {
             const options = Array.from(document.querySelectorAll('select[name="bean.district"] option'));
             console.log("🔍 页面上所有区域选项:", options.map(o => ({ value: o.value, text: o.text, disabled: o.disabled })));
@@ -167,7 +167,6 @@ const userInfo = {
         }
 
         await page.waitForTimeout(500); // 等待页面可能的动态更新稳定下来
-
         // appDate 是只读 (readonly) 的日历输入框。通过底层 evaluate 强制赋值。
         // 加入对 jQuery UI Datepicker 原生 API 的支持，确保彻底触发生态内的校验与级联更新。
         await page.evaluate((dateVal) => {
@@ -209,7 +208,11 @@ const userInfo = {
                 if (b.value === userInfo.appTime) return 1;
                 return 0;
             });
+
             console.log(`🔍 可用的预约时间选项: ${JSON.stringify(availableAppTimes)}`);
+            if (availableAppTimes.length === 0) {
+                throw new Error("没有任何可用的预约时间了，无法继续执行预约。");
+            }
 
             const targetAppTime = availableAppTimes[0];            
             console.log(`⏳ 正在选择预约时间: [${targetAppTime.text}]...`);
@@ -233,30 +236,47 @@ const userInfo = {
         const base64Image = captchaBuffer.toString('base64');
 
         // 发起请求到本地基于 Docker 跑起来的 FastApi
-        const response = await fetch("http://172.16.15.227:38080/api/recognize", {
+        let ocrApiUrl = "http://172.16.15.227:38080/api/recognize";
+        //ocrApiUrl = "http://172.16.15.227:38080/api/moonshot";
+        const response = await fetch(ocrApiUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ image_base64: base64Image })
         });
-        
         const resData = await response.json();
 
+        // 根据返回结果提取识别到的验证码字符串
+        const isLLMEnabled = ocrApiUrl.includes("moonshot");
+        let recognizedCaptcha = "";
         if (resData.code === 200 && resData.result) {
-            console.log(`🎯 验证码识别成功: [${resData.result}]`);
-            // 填入验证码
-            await page.fill('input[name="captcha"]', resData.result);
+            if (isLLMEnabled) {
+                if (resData.result.choices && resData.result.choices.length > 0) {
+                    recognizedCaptcha = resData.result.choices[0]["message"]["content"];
+                }
+            } else {
+                recognizedCaptcha = resData.result;
+            }
+
+            if (recognizedCaptcha && recognizedCaptcha.length === 4) {
+                console.log(`🎯 验证码识别成功: [${recognizedCaptcha}]`);
+                // 填入验证码
+                await page.fill('input[name="captcha"]', recognizedCaptcha);
             
-            // ==========================================
-            // 提交表单 (建议测试时保留注释，跑通后再开启自动提交)
-            // ==========================================
-            // console.log("🚀 所有资料填写完毕，提交表单...");
-            // await page.click('#eAAOForm_submit_button'); 
-            
-            console.log("🎉 流程执行完毕，保留浏览器供排查检查 60 分钟...");
-            await page.waitForTimeout(60000 * 60); // 停留5分钟供肉眼确认，结束后自动关闭
+                // ==========================================
+                // 提交表单 (建议测试时保留注释，跑通后再开启自动提交)
+                // ==========================================
+                // console.log("🚀 所有资料填写完毕，提交表单...");
+                // await page.click('#eAAOForm_submit_button');
+
+            } else {
+                console.error(`❌ 验证码识别结果不合法，预期是4位字符串，但得到: [${recognizedCaptcha}]`);
+            }
         } else {
             console.error("❌ 验证码识别失败，返回数据:", resData);
         }
+
+        console.log("🎉 流程执行完毕，保留浏览器供排查检查 60 分钟...");
+        await page.waitForTimeout(60000 * 60);
 
     } catch (error) {
         console.error("💥 脚本执行过程中发生错误:", error);
